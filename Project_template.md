@@ -96,6 +96,23 @@
 
 ### CI/CD
 
+#### Реализация CI/CD
+
+Workflow `.github/workflows/docker-build-push.yml` доработан для сборки и деплоя всех четырёх сервисов:
+
+1. **Триггеры:** push в ветки `main` и `cinema`, изменения в `src/**` или самом workflow, а также при создании релиза.
+2. **Job `build-and-push`** собирает и пушит 4 Docker-образа в GitHub Container Registry (`ghcr.io`):
+   - `ghcr.io/<repo>/monolith` из `./src/monolith`
+   - `ghcr.io/<repo>/movies-service` из `./src/microservices/movies`
+   - `ghcr.io/<repo>/proxy-service` из `./src/microservices/proxy`
+   - `ghcr.io/<repo>/events-service` из `./src/microservices/events`
+   - Теги: `sha-<short>`, `<branch>`, `latest`, семантические версии при релизе.
+3. **Job `api-tests`** запускается после успешной сборки (`needs: build-and-push`):
+   - Поднимает все сервисы через `docker compose up -d`
+   - Ждёт готовности (120 сек)
+   - Устанавливает Newman и запускает `npm run test:local`
+   - При падении тестов workflow становится красным
+
  В папке .github/worflows доработайте деплой новых сервисов proxy и events в docker-build-push.yml , чтобы api-tests при сборке отрабатывали корректно при отправке коммита в ваш репозиторий.
 
 Нужно доработать 
@@ -136,6 +153,26 @@ jobs:
 Как только сборка отработает и в github registry появятся ваши образы, можно переходить к блоку настройки Kubernetes
 Успешным результатом данного шага является "зеленая" сборка и "зеленые" тесты
 
+
+#### Ресурсы Kubernetes для proxy и events
+
+Созданы следующие манифесты:
+
+- **`proxy-service.yaml`** — Deployment (1 реплика, порт 8000) + Service (ClusterIP). Env-переменные `MONOLITH_URL`, `MOVIES_SERVICE_URL`, `EVENTS_SERVICE_URL`, `GRADUAL_MIGRATION`, `MOVIES_MIGRATION_PERCENT` берутся из ConfigMap. Health-пробы на `/health`.
+- **`events-service.yaml`** — Deployment (1 реплика, порт 8082) + Service (ClusterIP). Env-переменные `KAFKA_BROKERS` и `KAFKA_TOPIC` из ConfigMap. Health-пробы на `/api/events/health`.
+- **`configmap.yaml`** — добавлены ключи `EVENTS_SERVICE_URL`, `KAFKA_BROKERS`, `KAFKA_TOPIC`. Ключ `MOVIES_MIGRATION_PERCENT` можно менять без пересборки образа — достаточно `kubectl rollout restart`.
+- **`ingress.yaml`** — маршрутизация:
+  - `cinemaabyss.example.com/api/events/*` → `events-service:8082` (напрямую, для Postman-тестов)
+  - `cinemaabyss.example.com/*` → `proxy-service:8000` (API Gateway, Strangler Fig)
+  - Запрос `https://cinemaabyss.example.com/api/movies` попадает в proxy, который по feature flag `MOVIES_MIGRATION_PERCENT` решает — отправить на `movies-service` или на `monolith`.
+
+#### Инструкция запуска и тестирования (5 шагов)
+
+1. Развернуть кластер: `kubectl apply -f src/kubernetes/` (namespace, secrets, configmap, postgres, kafka, сервисы, ingress).
+2. Дождаться запуска подов: `kubectl -n cinemaabyss get pods` — все должны быть Running.
+3. Включить ingress: `minikube addons enable ingress && minikube tunnel`.
+4. Проверить: `curl https://cinemaabyss.example.com/api/movies` — должен вернуться список фильмов.
+5. Запустить тесты: `cd tests/postman && npm run test:kubernetes`. Проверить логи events: `kubectl -n cinemaabyss logs -l app=events-service`.
 
 ### Proxy в Kubernetes
 
