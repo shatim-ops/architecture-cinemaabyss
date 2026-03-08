@@ -341,6 +341,68 @@ cat .docker/config.json | base64
 
 
 # Задание 4
+
+### Описание Helm-чарта `cinema`
+
+Helm-чарт расположен в `src/kubernetes/helm/` и разворачивает все компоненты «Кинобездны» одной командой.
+
+**Создаваемые ресурсы:**
+- **Deployment + Service** для `proxy-service` (Strangler Fig API Gateway, порт 8000)
+- **Deployment + Service** для `events-service` (Kafka producer/consumer, порт 8082)
+- **Deployment + Service** для `monolith` и `movies-service`
+- **StatefulSet** для PostgreSQL, Kafka и Zookeeper
+- **ConfigMap** `cinemaabyss-config` — конфигурация для всех сервисов
+- **Ingress** — маршрутизация через `cinemaabyss.example.com`
+- **Secrets** — Docker registry credentials и DB password
+
+**Ключевые параметры в `values.yaml`:**
+
+| Параметр | Описание | Значение по умолчанию |
+|---|---|---|
+| `proxyService.image.repository` | Образ proxy-сервиса | `ghcr.io/shatim-ops/architecture-cinemaabyss/proxy-service` |
+| `proxyService.image.tag` | Тег образа proxy | `latest` |
+| `proxyService.image.pullPolicy` | Pull policy proxy | `Always` |
+| `proxyService.env.MOVIES_MIGRATION_PERCENT` | Процент миграции (feature flag) | `50` |
+| `eventsService.image.repository` | Образ events-сервиса | `ghcr.io/shatim-ops/architecture-cinemaabyss/events-service` |
+| `eventsService.image.tag` | Тег образа events | `latest` |
+| `eventsService.image.pullPolicy` | Pull policy events | `Always` |
+| `eventsService.env.KAFKA_BROKERS` | Адрес Kafka-брокера | `kafka:9092` |
+| `eventsService.env.KAFKA_TOPIC` | Топик Kafka | `cinema-events` |
+| `config.moviesMigrationPercent` | MOVIES_MIGRATION_PERCENT в ConfigMap | `50` |
+| `config.kafkaBrokers` | KAFKA_BROKERS в ConfigMap | `kafka:9092` |
+| `config.kafkaTopic` | KAFKA_TOPIC в ConfigMap | `cinema-events` |
+| `ingress.enabled` | Включить Ingress | `true` |
+| `ingress.hosts[0].host` | Хост Ingress | `cinemaabyss.example.com` |
+| `proxyService.service.type` | Тип Service proxy | `ClusterIP` |
+| `eventsService.service.type` | Тип Service events | `ClusterIP` |
+
+**Как установить/обновить чарт:**
+
+```bash
+# Установка (или обновление)
+helm upgrade --install cinema ./src/kubernetes/helm -n cinemaabyss --create-namespace
+
+# Проверка подов
+kubectl get pods,svc,ingress -n cinemaabyss
+
+# Изменение MOVIES_MIGRATION_PERCENT без пересборки
+helm upgrade cinema ./src/kubernetes/helm -n cinemaabyss \
+  --set config.moviesMigrationPercent=100
+
+# Или через values-файл
+helm upgrade cinema ./src/kubernetes/helm -n cinemaabyss -f custom-values.yaml
+```
+
+**Проверка работоспособности после установки:**
+
+1. Убедиться, что все поды Running: `kubectl get pods -n cinemaabyss`
+2. Включить ingress и tunnel: `minikube addons enable ingress && minikube tunnel`
+3. Проверить маршрут: `curl https://cinemaabyss.example.com/api/movies` — должен вернуть список фильмов
+4. Изменить процент миграции: `helm upgrade cinema ./src/kubernetes/helm -n cinemaabyss --set config.moviesMigrationPercent=100` — весь трафик `api/movies` пойдёт на `movies-service`
+5. Запустить тесты: `cd tests/postman && npm run test:kubernetes`, проверить логи events: `kubectl -n cinemaabyss logs -l app=events-service`
+
+---
+
 Для простоты дальнейшего обновления и развертывания вам как архитектуру необходимо так же реализовать helm-чарты для прокси-сервиса и проверить работу 
 
 Для этого:
