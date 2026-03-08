@@ -67,3 +67,18 @@ Return the namespace
 {{- define "cinemaabyss.namespace" -}}
 {{- default .Values.global.namespace .Release.Namespace }}
 {{- end }}
+
+{{/*
+Aliases for cinema.* (chart renamed to cinema)
+*/}}
+{{- define "cinema.name" -}}
+{{ include "cinemaabyss.name" . }}
+{{- end }}
+
+{{- define "cinema.fullname" -}}
+{{ include "cinemaabyss.fullname" . }}
+{{- end }}
+
+{{- define "cinema.labels" -}}
+{{ include "cinemaabyss.labels" . }}
+{{- end }}

@@ -1,6 +1,6 @@
 apiVersion: v2
-name: cinemaabyss
-description: A Helm chart for CinemaAbyss application
+name: cinema
+description: Helm-чарт для развёртывания proxy и events сервисов «Кинобездны» (Strangler Fig + Kafka)
 type: application
 version: 0.1.0
 appVersion: "1.0.0"

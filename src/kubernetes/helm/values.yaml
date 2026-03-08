@@ -6,6 +6,7 @@ global:
 # Image pull secrets
 imagePullSecrets:
   dockerconfigjson: ewoJImF1dGhzIjogewoJCSJnaGNyLmlvIjogewoJCQkiYXV0aCI6
+
 # Database configuration
 database:
   host: postgres
@@ -53,10 +54,12 @@ monolith:
 proxyService:
   enabled: true
   image:
-    repository: ghcr.io/db-exp/cinemaabysstest/proxy-service
+    repository: ghcr.io/shatim-ops/architecture-cinemaabyss/proxy-service
     tag: latest
     pullPolicy: Always
   replicas: 1
+  env:
+    MOVIES_MIGRATION_PERCENT: "50"
   resources:
     limits:
       cpu: 300m
@@ -65,7 +68,7 @@ proxyService:
       cpu: 100m
       memory: 128Mi
   service:
-    port: 80
+    port: 8000
     targetPort: 8000
     type: ClusterIP
 
@@ -93,10 +96,13 @@ moviesService:
 eventsService:
   enabled: true
   image:
-    repository: ghcr.io/db-exp/cinemaabysstest/events-service
+    repository: ghcr.io/shatim-ops/architecture-cinemaabyss/events-service
     tag: latest
     pullPolicy: Always
   replicas: 1
+  env:
+    KAFKA_BROKERS: "kafka:9092"
+    KAFKA_TOPIC: "cinema-events"
   resources:
     limits:
       cpu: 300m
@@ -172,7 +178,7 @@ ingress:
         - path: /
           pathType: Prefix
           service: proxy-service
-          port: 80
+          port: 8000
         - path: /api/events
           pathType: Prefix
           service: events-service
@@ -182,4 +188,7 @@ ingress:
 config:
   # Strangler Fig configuration
   gradualMigration: "true"
-  moviesMigrationPercent: "100"
+  moviesMigrationPercent: "50"
+  # Kafka configuration
+  kafkaBrokers: "kafka:9092"
+  kafkaTopic: "cinema-events"

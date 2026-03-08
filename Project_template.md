@@ -5,7 +5,7 @@
 1. Спроектируйте to be архитектуру КиноБездны, разделив всю систему на отдельные домены и организовав интеграционное взаимодействие и единую точку вызова сервисов.
 Результат представьте в виде контейнерной диаграммы в нотации С4.
 Добавьте ссылку на файл в этот шаблон
-[ссылка на файл](ссылка)
+[C4 Container Diagram](c4.puml)
 
 # Задание 2
 
@@ -39,6 +39,17 @@
       - cinemaabyss-network
 ```
 
+#### Реализация прокси-сервиса
+
+Прокси-сервис реализован на Go в `./src/microservices/proxy` и реализует паттерн **Strangler Fig** для постепенной миграции с монолита на микросервисы:
+
+- HTTP-сервер слушает на порту 8000 и выступает единой точкой входа (API Gateway).
+- Для endpoint `/api/movies` применяется **feature flag** через переменную `MOVIES_MIGRATION_PERCENT` (0–100). При каждом запросе генерируется случайное число 0–99: если оно меньше заданного процента — запрос проксируется на `movies-service`, иначе — на `monolith`.
+- Переменная `GRADUAL_MIGRATION` позволяет полностью включить/выключить постепенную миграцию. Если выключена, весь трафик идёт на монолит.
+- Запросы к `/api/events/*` маршрутизируются на `events-service`.
+- Все остальные запросы (`/api/users`, `/api/payments`, `/api/subscriptions`) проксируются на `monolith`.
+- Каждый проксированный запрос логируется с указанием, куда он был направлен.
+
 - После реализации запустите postman тесты - они все должны быть зеленые (кроме events).
 - Отправьте запросы к API Gateway:
    ```bash
@@ -56,6 +67,22 @@
     - Реализуйте простой API, при вызове которого будут создаваться события User/Payment/Movie и обрабатываться внутри сервиса с записью в лог
     - Добавьте в docker-compose новый сервис, kafka там уже есть
 
+#### Реализация сервиса events
+
+Сервис events реализован на Go в `./src/microservices/events` и интегрирован с Kafka:
+
+- HTTP-сервер слушает на порту 8082 и реализует API согласно спецификации `api-specification.yaml`.
+- **Эндпоинты:**
+  - `GET /api/events/health` — health check
+  - `POST /api/events/movie` — создание события фильма (MovieEvent)
+  - `POST /api/events/user` — создание события пользователя (UserEvent)
+  - `POST /api/events/payment` — создание события платежа (PaymentEvent)
+- **Producer:** при вызове любого POST-эндпоинта сервис формирует сообщение с полями `id`, `type`, `timestamp`, `payload` и публикует его в Kafka-топик `cinema-events` (имя вынесено в env `KAFKA_TOPIC`).
+- **Consumer:** при старте сервиса запускается фоновый consumer (group: `events-consumer-group`), который непрерывно читает сообщения из того же топика и записывает их в лог сервиса.
+- Структура сообщения: `{ "id": "movie-1-viewed", "type": "movie", "timestamp": "...", "payload": {...} }`.
+- В `docker-compose.yml` сервис добавлен с зависимостью от `kafka` и переменными `KAFKA_BROKERS` и `KAFKA_TOPIC`.
+- Используется библиотека `segmentio/kafka-go`.
+
 Необходимые тесты для проверки этого API вызываются при запуске npm run test:local из папки tests/postman 
 Приложите скриншот тестов и скриншот состояния топиков Kafka из UI http://localhost:8090 
 
@@ -68,6 +95,23 @@
 
 
 ### CI/CD
+
+#### Реализация CI/CD
+
+Workflow `.github/workflows/docker-build-push.yml` доработан для сборки и деплоя всех четырёх сервисов:
+
+1. **Триггеры:** push в ветки `main` и `cinema`, изменения в `src/**` или самом workflow, а также при создании релиза.
+2. **Job `build-and-push`** собирает и пушит 4 Docker-образа в GitHub Container Registry (`ghcr.io`):
+   - `ghcr.io/<repo>/monolith` из `./src/monolith`
+   - `ghcr.io/<repo>/movies-service` из `./src/microservices/movies`
+   - `ghcr.io/<repo>/proxy-service` из `./src/microservices/proxy`
+   - `ghcr.io/<repo>/events-service` из `./src/microservices/events`
+   - Теги: `sha-<short>`, `<branch>`, `latest`, семантические версии при релизе.
+3. **Job `api-tests`** запускается после успешной сборки (`needs: build-and-push`):
+   - Поднимает все сервисы через `docker compose up -d`
+   - Ждёт готовности (120 сек)
+   - Устанавливает Newman и запускает `npm run test:local`
+   - При падении тестов workflow становится красным
 
  В папке .github/worflows доработайте деплой новых сервисов proxy и events в docker-build-push.yml , чтобы api-tests при сборке отрабатывали корректно при отправке коммита в ваш репозиторий.
 
@@ -109,6 +153,26 @@ jobs:
 Как только сборка отработает и в github registry появятся ваши образы, можно переходить к блоку настройки Kubernetes
 Успешным результатом данного шага является "зеленая" сборка и "зеленые" тесты
 
+
+#### Ресурсы Kubernetes для proxy и events
+
+Созданы следующие манифесты:
+
+- **`proxy-service.yaml`** — Deployment (1 реплика, порт 8000) + Service (ClusterIP). Env-переменные `MONOLITH_URL`, `MOVIES_SERVICE_URL`, `EVENTS_SERVICE_URL`, `GRADUAL_MIGRATION`, `MOVIES_MIGRATION_PERCENT` берутся из ConfigMap. Health-пробы на `/health`.
+- **`events-service.yaml`** — Deployment (1 реплика, порт 8082) + Service (ClusterIP). Env-переменные `KAFKA_BROKERS` и `KAFKA_TOPIC` из ConfigMap. Health-пробы на `/api/events/health`.
+- **`configmap.yaml`** — добавлены ключи `EVENTS_SERVICE_URL`, `KAFKA_BROKERS`, `KAFKA_TOPIC`. Ключ `MOVIES_MIGRATION_PERCENT` можно менять без пересборки образа — достаточно `kubectl rollout restart`.
+- **`ingress.yaml`** — маршрутизация:
+  - `cinemaabyss.example.com/api/events/*` → `events-service:8082` (напрямую, для Postman-тестов)
+  - `cinemaabyss.example.com/*` → `proxy-service:8000` (API Gateway, Strangler Fig)
+  - Запрос `https://cinemaabyss.example.com/api/movies` попадает в proxy, который по feature flag `MOVIES_MIGRATION_PERCENT` решает — отправить на `movies-service` или на `monolith`.
+
+#### Инструкция запуска и тестирования (5 шагов)
+
+1. Развернуть кластер: `kubectl apply -f src/kubernetes/` (namespace, secrets, configmap, postgres, kafka, сервисы, ingress).
+2. Дождаться запуска подов: `kubectl -n cinemaabyss get pods` — все должны быть Running.
+3. Включить ingress: `minikube addons enable ingress && minikube tunnel`.
+4. Проверить: `curl https://cinemaabyss.example.com/api/movies` — должен вернуться список фильмов.
+5. Запустить тесты: `cd tests/postman && npm run test:kubernetes`. Проверить логи events: `kubectl -n cinemaabyss logs -l app=events-service`.
 
 ### Proxy в Kubernetes
 
@@ -277,6 +341,68 @@ cat .docker/config.json | base64
 
 
 # Задание 4
+
+### Описание Helm-чарта `cinema`
+
+Helm-чарт расположен в `src/kubernetes/helm/` и разворачивает все компоненты «Кинобездны» одной командой.
+
+**Создаваемые ресурсы:**
+- **Deployment + Service** для `proxy-service` (Strangler Fig API Gateway, порт 8000)
+- **Deployment + Service** для `events-service` (Kafka producer/consumer, порт 8082)
+- **Deployment + Service** для `monolith` и `movies-service`
+- **StatefulSet** для PostgreSQL, Kafka и Zookeeper
+- **ConfigMap** `cinemaabyss-config` — конфигурация для всех сервисов
+- **Ingress** — маршрутизация через `cinemaabyss.example.com`
+- **Secrets** — Docker registry credentials и DB password
+
+**Ключевые параметры в `values.yaml`:**
+
+| Параметр | Описание | Значение по умолчанию |
+|---|---|---|
+| `proxyService.image.repository` | Образ proxy-сервиса | `ghcr.io/shatim-ops/architecture-cinemaabyss/proxy-service` |
+| `proxyService.image.tag` | Тег образа proxy | `latest` |
+| `proxyService.image.pullPolicy` | Pull policy proxy | `Always` |
+| `proxyService.env.MOVIES_MIGRATION_PERCENT` | Процент миграции (feature flag) | `50` |
+| `eventsService.image.repository` | Образ events-сервиса | `ghcr.io/shatim-ops/architecture-cinemaabyss/events-service` |
+| `eventsService.image.tag` | Тег образа events | `latest` |
+| `eventsService.image.pullPolicy` | Pull policy events | `Always` |
+| `eventsService.env.KAFKA_BROKERS` | Адрес Kafka-брокера | `kafka:9092` |
+| `eventsService.env.KAFKA_TOPIC` | Топик Kafka | `cinema-events` |
+| `config.moviesMigrationPercent` | MOVIES_MIGRATION_PERCENT в ConfigMap | `50` |
+| `config.kafkaBrokers` | KAFKA_BROKERS в ConfigMap | `kafka:9092` |
+| `config.kafkaTopic` | KAFKA_TOPIC в ConfigMap | `cinema-events` |
+| `ingress.enabled` | Включить Ingress | `true` |
+| `ingress.hosts[0].host` | Хост Ingress | `cinemaabyss.example.com` |
+| `proxyService.service.type` | Тип Service proxy | `ClusterIP` |
+| `eventsService.service.type` | Тип Service events | `ClusterIP` |
+
+**Как установить/обновить чарт:**
+
+```bash
+# Установка (или обновление)
+helm upgrade --install cinema ./src/kubernetes/helm -n cinemaabyss --create-namespace
+
+# Проверка подов
+kubectl get pods,svc,ingress -n cinemaabyss
+
+# Изменение MOVIES_MIGRATION_PERCENT без пересборки
+helm upgrade cinema ./src/kubernetes/helm -n cinemaabyss \
+  --set config.moviesMigrationPercent=100
+
+# Или через values-файл
+helm upgrade cinema ./src/kubernetes/helm -n cinemaabyss -f custom-values.yaml
+```
+
+**Проверка работоспособности после установки:**
+
+1. Убедиться, что все поды Running: `kubectl get pods -n cinemaabyss`
+2. Включить ingress и tunnel: `minikube addons enable ingress && minikube tunnel`
+3. Проверить маршрут: `curl https://cinemaabyss.example.com/api/movies` — должен вернуть список фильмов
+4. Изменить процент миграции: `helm upgrade cinema ./src/kubernetes/helm -n cinemaabyss --set config.moviesMigrationPercent=100` — весь трафик `api/movies` пойдёт на `movies-service`
+5. Запустить тесты: `cd tests/postman && npm run test:kubernetes`, проверить логи events: `kubectl -n cinemaabyss logs -l app=events-service`
+
+---
+
 Для простоты дальнейшего обновления и развертывания вам как архитектуру необходимо так же реализовать helm-чарты для прокси-сервиса и проверить работу 
 
 Для этого:

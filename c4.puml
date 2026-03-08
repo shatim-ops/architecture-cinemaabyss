@@ -1,0 +1,74 @@
+@startuml
+!include <C4/C4_Container>
+
+title "Кинобездна — To-Be архитектура (Container Diagram)"
+
+Person(user_web, "Web-пользователь", "Смотрит фильмы через веб-интерфейс")
+Person(user_mobile, "Мобильный пользователь", "Смотрит фильмы через мобильное приложение")
+Person(user_tv, "TV-пользователь", "Смотрит фильмы через Smart TV")
+
+System_Boundary(cinema_system, "Кинобездна") {
+
+  Container(bff, "Cinema API / BFF", "Node.js / Java / Go", "Единая точка входа для всех клиентов, маршрутизация запросов к микросервисам, агрегация данных")
+
+  Container(user_svc, "User Service", "Microservice", "Регистрация, аутентификация, профили пользователей, список избранного")
+  Container(billing_svc, "Billing / Payment Service", "Microservice", "Платежи, статусы оплат, интеграция с платежными провайдерами")
+  Container(subscription_svc, "Subscription Service", "Microservice", "Управление подписками, планами и статусами")
+  Container(catalog_svc, "Catalog / Metadata Service", "Microservice", "Каталог фильмов, жанры, актёры, рейтинги, метаданные")
+  Container(discount_svc, "Discount / Promo Service", "Microservice", "Скидки, промокоды, акции, партнёрские программы")
+  Container(history_svc, "History / Viewing Service", "Microservice", "История просмотров, прогресс, последние просмотренные")
+  Container(integration_svc, "Integration Service", "Microservice", "Интеграции с внешними системами: маркетплейсы, партнёры, лояльность")
+
+  ContainerDb(user_db, "User DB", "PostgreSQL", "Данные пользователей и их профилей")
+  ContainerDb(billing_db, "Billing DB", "PostgreSQL", "Транзакции и платежные данные")
+  ContainerDb(subscription_db, "Subscription DB", "PostgreSQL", "Подписки и планы")
+  ContainerDb(catalog_db, "Catalog DB", "PostgreSQL", "Каталог фильмов и метаданные")
+  ContainerDb(discount_db, "Discount DB", "PostgreSQL", "Скидки, промокоды, кампании")
+  ContainerDb(history_db, "History DB", "PostgreSQL", "История просмотров и события")
+
+  Container(kafka, "Event Bus (Kafka)", "Kafka", "Шина событий: просмотр завершён, подписка оформлена, платёж прошёл и т.д.")
+  Container(ci_cd, "CI/CD Platform", "Jenkins / GitLab CI", "Сборка, тестирование, деплой микросервисов и инфраструктуры")
+  Container(k8s, "Kubernetes Cluster", "Kubernetes", "Оркестратор контейнеров, где работают все микросервисы")
+  Container(mesh, "Service Mesh", "Istio / Envoy", "Маршрутизация трафика, mTLS, политика доступа, observability")
+  Container(helm, "Helm Charts", "Helm", "Описания релизов и зависимостей для развёртывания в Kubernetes")
+
+}
+
+System_Ext(reco_sys, "Recommendation System", "Внешняя рекомендательная система, использующая события и историю просмотров")
+System_Ext(payment_provider, "Payment Provider", "Внешний платёжный провайдер")
+System_Ext(loyalty_partner, "Loyalty Partner / Marketplace", "Партнёрские сервисы лояльности и маркетплейсы")
+
+Rel(user_web, bff, "Использует", "HTTPS")
+Rel(user_mobile, bff, "Использует", "HTTPS")
+Rel(user_tv, bff, "Использует", "HTTPS")
+
+Rel(bff, user_svc, "CRUD профиля, аутентификация", "HTTP/gRPC через Service Mesh")
+Rel(bff, billing_svc, "Инициирует платежи", "HTTP/gRPC через Service Mesh")
+Rel(bff, subscription_svc, "Управление подпиской", "HTTP/gRPC через Service Mesh")
+Rel(bff, catalog_svc, "Запрос каталога и деталей фильмов", "HTTP/gRPC через Service Mesh")
+Rel(bff, discount_svc, "Получение скидок и промо", "HTTP/gRPC через Service Mesh")
+Rel(bff, history_svc, "История просмотров", "HTTP/gRPC через Service Mesh")
+
+Rel(user_svc, user_db, "Читает/записывает", "SQL")
+Rel(billing_svc, billing_db, "Читает/записывает", "SQL")
+Rel(subscription_svc, subscription_db, "Читает/записывает", "SQL")
+Rel(catalog_svc, catalog_db, "Читает/записывает", "SQL")
+Rel(discount_svc, discount_db, "Читает/записывает", "SQL")
+Rel(history_svc, history_db, "Читает/записывает", "SQL")
+
+Rel(billing_svc, payment_provider, "Проводит платежи", "HTTPS")
+Rel(integration_svc, loyalty_partner, "Обмен данными по лояльности/промо", "HTTPS")
+
+Rel(history_svc, kafka, "Публикует события просмотра", "Kafka events")
+Rel(subscription_svc, kafka, "Публикует события подписки", "Kafka events")
+Rel(billing_svc, kafka, "Публикует события оплаты", "Kafka events")
+
+Rel(kafka, reco_sys, "Передаёт события просмотров и подписок", "Kafka / HTTP")
+Rel(reco_sys, catalog_svc, "Запрашивает/передаёт рекомендации", "HTTPS")
+Rel(reco_sys, integration_svc, "Дополнительные данные для рекомендаций", "HTTPS")
+
+Rel(ci_cd, k8s, "Деплой контейнеров", "kubectl / API")
+Rel(ci_cd, helm, "Запускает релизы", "helm install/upgrade")
+Rel(k8s, mesh, "Интеграция с sidecar-прокси", "Envoy sidecars для сервисов")
+
+@enduml
