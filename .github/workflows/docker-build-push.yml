@@ -137,9 +137,25 @@ jobs:
 
       - name: Start services with Docker Compose
         run: |
-          docker compose up -d
+          docker compose up -d --build
           echo "Waiting for services to be ready..."
-          sleep 120
+          for i in $(seq 1 30); do
+            echo "--- Health check attempt $i/30 ---"
+            MONOLITH=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/health 2>/dev/null || echo "000")
+            MOVIES=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8081/api/movies/health 2>/dev/null || echo "000")
+            EVENTS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8082/api/events/health 2>/dev/null || echo "000")
+            PROXY=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/health 2>/dev/null || echo "000")
+            echo "  monolith=$MONOLITH movies=$MOVIES events=$EVENTS proxy=$PROXY"
+            if [ "$MONOLITH" = "200" ] && [ "$EVENTS" = "200" ] && [ "$PROXY" = "200" ]; then
+              echo "All services are ready!"
+              break
+            fi
+            sleep 10
+          done
+          echo "--- Final container status ---"
+          docker compose ps
+          echo "--- Container logs (last 20 lines each) ---"
+          docker compose logs --tail=20
 
       - name: Set up Node.js
         uses: actions/setup-node@v3
@@ -155,6 +171,22 @@ jobs:
       - name: Run API tests
         working-directory: tests/postman
         run: npm run test:local
+
+      - name: Debug logs on failure
+        if: failure()
+        run: |
+          echo "=== Container status ==="
+          docker compose ps
+          echo "=== Monolith logs ==="
+          docker compose logs monolith --tail=50
+          echo "=== Movies-service logs ==="
+          docker compose logs movies-service --tail=50
+          echo "=== Events-service logs ==="
+          docker compose logs events-service --tail=50
+          echo "=== Proxy-service logs ==="
+          docker compose logs proxy-service --tail=50
+          echo "=== Postgres logs ==="
+          docker compose logs postgres --tail=30
 
       - name: Stop services
         if: always()
